@@ -1,0 +1,103 @@
+services:
+  postgres:
+    image: postgres:14
+    container_name: etl-postgres
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongo:
+    image: mongo:7
+    container_name: etl-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Инициализация БД Airflow — запускается один раз
+  airflow-init:
+    image: apache/airflow:2.9.3
+    container_name: etl-airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://airflow:airflow@etl-postgres:5432/airflow
+      AIRFLOW_CONN_MONGO_DEFAULT: mongodb://etl-mongo:27017/ecommerce
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/data:/opt/airflow/data
+    command: >
+      bash -c "
+      airflow db init &&
+      airflow users create -r Admin -u admin -f Admin -l User -p admin --email admin@example.com || echo 'Admin user already exists'
+      "
+    restart: "no"
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    container_name: etl-airflow-web
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://airflow:airflow@etl-postgres:5432/airflow
+      AIRFLOW_CONN_MONGO_DEFAULT: mongodb://etl-mongo:27017/ecommerce
+      _PIP_ADDITIONAL_REQUIREMENTS: "pymongo"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/data:/opt/airflow/data
+    ports:
+      - "8080:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD", "airflow", "db", "check"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    container_name: etl-airflow-scheduler
+    depends_on:
+      airflow-webserver:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      AIRFLOW_CONN_POSTGRES_DEFAULT: postgresql+psycopg2://airflow:airflow@etl-postgres:5432/airflow
+      AIRFLOW_CONN_MONGO_DEFAULT: mongodb://etl-mongo:27017/ecommerce
+      _PIP_ADDITIONAL_REQUIREMENTS: "pymongo"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/data:/opt/airflow/data
+    command: scheduler
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mongo_data:

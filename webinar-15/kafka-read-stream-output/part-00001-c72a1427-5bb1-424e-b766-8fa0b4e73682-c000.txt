@@ -1,0 +1,1 @@
+{"msg":"Test message #2 from dataproc-cluster"}
